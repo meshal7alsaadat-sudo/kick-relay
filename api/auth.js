@@ -8,7 +8,7 @@ export default async function handler(req, res) {
   const channel = String(req.query.channel || '').toLowerCase().trim();
   if (!channel) return res.status(400).json({ error: 'missing channel' });
 
-  // UA و هيدرز شبيهة بالمتصفح
+  // هيدرز تشبه المتصفح
   const H = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
@@ -24,7 +24,7 @@ export default async function handler(req, res) {
   };
 
   try {
-    // 0) خذ الكوكيز من صفحة القناة (بعض الأحيان Kick يطلب presence cookie)
+    // (0) نزور صفحة القناة للحصول على الكوكيز + ناخذ الـHTML
     const warm = await fetch(`https://kick.com/${channel}`, {
       headers: {
         'User-Agent': H['User-Agent'],
@@ -36,29 +36,45 @@ export default async function handler(req, res) {
     });
     const setCookies = warm.headers.get('set-cookie') || '';
     const cookieHeader = setCookies
-      .split(/,(?=[^ ;]+=)/) // افصل كوكيز متعددة
+      .split(/,(?=[^ ;]+=)/)
       .map(s => s.split(';')[0])
       .filter(Boolean)
       .join('; ');
+    const warmHtml = await warm.text();
 
-    // 1) channel -> chatroom id
-    const chRes = await fetch(`https://kick.com/api/v2/channels/${channel}`, {
-      headers: { ...H, ...(cookieHeader ? { Cookie: cookieHeader } : {}) },
-      redirect: 'follow'
-    });
-    const chText = await chRes.text();
-    let ch;
-    try { ch = JSON.parse(chText); }
-    catch {
-      return res.status(502).json({
-        step:'channel', error:'html-returned', status: chRes.status,
-        bodyPreview: chText.slice(0,180)
+    // (1) نحاول أولاً عبر API الرسمي
+    let roomId = null;
+    try {
+      const chRes = await fetch(`https://kick.com/api/v2/channels/${channel}`, {
+        headers: { ...H, ...(cookieHeader ? { Cookie: cookieHeader } : {}) },
+        redirect: 'follow'
+      });
+      const chText = await chRes.text();
+      const ch = JSON.parse(chText);
+      roomId = ch?.chatroom?.id || null;
+    } catch (_) {
+      // تجاهل، بنجرّب من الـHTML بالأسفل
+    }
+
+    // (1-b) Fallback: استخراج الـroomId من HTML الصفحة
+    if (!roomId && warmHtml) {
+      // أمثلة محتملة داخل الصفحة:
+      // "chatroom":{"id":12345
+      // "chatroom_id":12345
+      const m1 = warmHtml.match(/"chatroom"\s*:\s*{[^}]*"id"\s*:\s*(\d+)/);
+      const m2 = warmHtml.match(/"chatroom_id"\s*:\s*(\d+)/);
+      roomId = (m1 && Number(m1[1])) || (m2 && Number(m2[1])) || null;
+    }
+
+    if (!roomId) {
+      return res.status(404).json({
+        step: 'channel',
+        error: 'no chatroom id',
+        hint: 'Try going live once to initialize chatroom on Kick'
       });
     }
-    const roomId = ch?.chatroom?.id;
-    if (!roomId) return res.status(404).json({ step:'channel', error:'no chatroom id', chatroom: ch?.chatroom });
 
-    // 2) auth -> token (مع نفس الكوكيز)
+    // (2) نجيب التوكن
     const aRes = await fetch(`https://kick.com/api/v2/chatroom/${roomId}/auth`, {
       headers: { ...H, ...(cookieHeader ? { Cookie: cookieHeader } : {}) },
       redirect: 'follow'
@@ -68,8 +84,7 @@ export default async function handler(req, res) {
     try { a = JSON.parse(aText); }
     catch {
       return res.status(502).json({
-        step:'auth', error:'html-returned', status: aRes.status,
-        bodyPreview: aText.slice(0,180)
+        step:'auth', error:'html-returned', status: aRes.status, bodyPreview: aText.slice(0,180)
       });
     }
     const token = a?.token;
