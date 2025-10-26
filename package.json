@@ -1,0 +1,14 @@
+{
+  "name": "kick-relay",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2",
+    "ws": "^8.16.0"
+  }
+}
